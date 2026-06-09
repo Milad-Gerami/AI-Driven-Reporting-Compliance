@@ -1,71 +1,218 @@
-# Claude Code Operating Rules
+# CLAUDE.md
 
-## Role
-Assistant, not decision-maker. Suggest — do not act independently.
+**Colaberry Agent Project Rules & Operating Model**
 
-## Rules
-- One change at a time
-- Explain before changing
-- Wait for confirmation before proceeding
-- Never modify multiple files at once
-- Never assume requirements — ask if unclear
-- All changes must be verifiable — no silent updates
-- **Never run `git commit`, `git push`, or any git command that writes to the repository history.** Git operations are performed by the developer only. This is a strict rule with no exceptions.
+This file defines how Claude and other AI coding agents must behave when working in this repository.
 
-## Response Format
-- One sentence of context, then the code or change
-- No re-explaining confirmed concepts
-- No internals, no tangents
-- Only split steps when output determines what comes next
+This project does **not** use Moltbot.
 
-## Project Context
-**LaunchForge AI** — a portfolio project demonstrating full-stack SaaS development.
-Target roles: SQL Developer, Power BI Developer, Business Analyst.
+Claude Code and other coding agents are used to **build and maintain** the system — they are **not the runtime system itself**.
 
-**Stack:** Node.js · Express 5 · PostgreSQL · Redis (Memurai) · React · TypeScript · Vite · Tailwind CSS · Anthropic SDK · GitHub Actions
+---
 
-**Repo:** Milad-Gerami/LaunchForge-AI (GitHub)
-**Local path:** C:\Users\milad\Main_Repo
-**Editor:** VS Code + Claude Code extension
-**Terminal:** PowerShell — do NOT chain commands with `&&`; issue each command as a separate step
+## Core Principle
 
-## Architecture Pattern
-```
-Request → Route → Controller → Service → Database
-```
-- Routes: define URL paths and attach middleware
-- Controllers: handle request/response, validate input, call services
-- Services: business logic, database queries
-- Middleware: auth (JWT), role checks (RBAC)
-- DB: PostgreSQL via `pg` pool (`db/index.js`), Redis via Memurai (`db/redis.js`)
+LLMs are probabilistic.
 
-## Current State (entering v3)
+Production systems must be deterministic.
 
-**v1 delivered:** Auth (JWT), RBAC (admin/user roles), PostgreSQL schema (5 tables: users, projects, tasks, project_activity, role_audit_log), 22+ REST endpoints, security middleware (Helmet, rate limiting, CORS), GitHub Actions CI with 79 passing tests
+Claude’s role is to:
 
-**v2 added:** AI content generation (`POST /api/ai/generate` via Anthropic SDK), analytics dashboard (`GET /api/analytics`), Redis caching, React frontend (TypeScript, Vite, TanStack Query, Recharts), deployment config (Render, Docker)
+- reason
+- plan
+- orchestrate
+- modify instructions and code **carefully**
 
-**v3 goal:** Reframe the platform as a startup launch operating system by adding workspaces, campaigns, feedback, GitHub integration, notifications, and a viewer RBAC role. All v3 work is additive — no v1 or v2 code is removed or broken.
+Claude is **not** the runtime executor of business logic.
 
-## v3 Phase Order
-- Phase 9:  Database migration — 5 new tables (workspaces, campaigns, feedback, workspace_members, notifications)
-- Phase 10: Campaigns module (backend + frontend)
-- Phase 11: Feedback system (backend + frontend)
-- Phase 12: GitHub integration — repo metadata + AI readiness report
-- Phase 13: Notification system (backend + frontend)
-- Phase 14: RBAC extension — viewer role
-- Phase 15: Documentation & speak guide
+---
 
-## Database
-- Engine: PostgreSQL
-- Database name: `launchforge_db`
-- Connection: `db/index.js` (pg Pool, credentials from `.env`)
-- Migrations: plain SQL files in `db/migrations/` — run manually by the developer, never auto-executed by Claude Code
-- **Never run migration SQL directly.** Write the file; the developer runs it.
+## High-Level Architecture
 
-## Environment Variables
-Stored in `.env` (gitignored). Never hardcode credentials. Required vars:
-`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`, `ANTHROPIC_API_KEY`, `REDIS_URL`, `PORT`
+This project follows an **Agent-First, Deterministic-Execution** model.
+
+### Layer 1 — Directives
+
+- Human-readable SOPs
+- Stored in `/directives`
+- Written in plain language
+- Describe goals, inputs, outputs, edge cases, and safety constraints
+
+Directives are living documents and must be updated as the system learns.
+
+### Layer 2 — Orchestration
+
+- This is Claude
+- Responsibilities:
+  - read relevant directives
+  - plan changes
+  - decide which tools/scripts are required
+  - ask clarifying questions when needed
+  - update directives with learnings
+
+Claude **never** executes business logic directly.
+
+### Layer 3 — Execution
+
+- Deterministic scripts
+- Stored in `/execution` and optionally `/services/worker`
+- Responsibilities:
+  - API calls
+  - data processing
+  - database reads/writes
+  - file operations
+  - scheduled jobs
+
+Execution code must be repeatable, testable, auditable, and safe to rerun.
+
+---
+
+## Folder Responsibilities
+
+### `/agents`
+
+Agent personas and role definitions. No executable logic.
+
+### `/directives`
+
+SOPs and runbooks. Claude reads these before acting.
+
+### `/execution`
+
+Deterministic tools and scripts. One script = one clear responsibility. No prompts.
+
+### `/services/worker`
+
+Long-running or scheduled jobs. Calls scripts from `/execution`.
+
+### `/config`
+
+Environment wiring. No secrets.
+
+### `/tests`
+
+Automated tests.
+
+### `/tmp`
+
+Scratch space. Safe to delete. Never committed.
+
+---
+
+## Testing & Validation Rules
+
+Testing is mandatory.
+
+- All non-trivial execution logic must have unit tests.
+- External dependencies must be mocked.
+- Integration tests must never touch production.
+- Workers must never send real communications during tests.
+- Directives must be validated for required sections, referenced files, and markdown structure.
+
+---
+
+## Claude Operating Rules
+
+### 1. Never act blindly
+
+Always read relevant directives first. If no directive exists, ask before creating one.
+
+### 2. Never mix layers
+
+No business logic in directives.  
+No orchestration logic in execution scripts.  
+No execution inside Claude responses.
+
+### 3. Prefer deterministic tools
+
+If a task can be done via a script, do not simulate it in natural language.
+
+### 4. Approval-gated changes
+
+Claude must request approval before:
+
+- large refactors
+- schema changes
+- deleting files
+- production-impacting logic
+- modifying safety or compliance directives
+
+### 5. Self-Annealing Loop
+
+When something fails:
+
+1. Identify the root cause
+2. Fix the script or logic
+3. Add or update tests
+4. Update the relevant directive
+5. Confirm the system is stronger
+
+Failures are inputs, not mistakes.
+
+---
+
+## Tooling Assumptions
+
+Claude may assume:
+
+- Claude Code is available as a terminal coding agent
+- VS Code, VSCodium, or Cursor may be used
+- Git is always present
+- CI runs automated tests
+
+Claude must not assume:
+
+- Moltbot exists
+- proprietary automation platforms exist
+- production credentials are available locally
+
+---
+
+## Intern Safety Rules
+
+This repository may be worked on by interns.
+
+Therefore:
+
+- No destructive scripts without confirmation
+- No production writes without explicit environment checks
+- No secrets in repo
+- Clear setup instructions must exist in `/docs`
+- One-command test execution must exist, such as `scripts/test`
+
+Claude should optimize for:
+
+- clarity
+- reproducibility
+- teachability
+
+---
+
+## Definition of Done
+
+A change is not complete unless:
+
+- relevant unit tests exist and pass
+- behavior-changing logic updates directives
+- no secrets are introduced
+- validation scripts pass
+- changes are understandable by a junior developer
+
+---
+
+## Summary
+
+Claude is the **planner and orchestrator**, not the worker.
+
+- Directives define intent
+- Scripts do the work
+- Workers run the system
+- Tests protect correctness
+- Claude improves the system over time
+
+**Be deliberate.  
+Be safe.  
+Prefer systems over cleverness.**
 
 ## Git Policy
 **Claude Code does not touch git.** No `git add`, `git commit`, `git push`, `git merge`, or any command that modifies repository history. The developer handles all version control. When a phase is ready to commit, Claude Code's job is done — state that clearly and stop.
