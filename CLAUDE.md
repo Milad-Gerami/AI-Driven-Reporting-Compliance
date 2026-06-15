@@ -1,221 +1,41 @@
-# CLAUDE.md
-
-**Colaberry Agent Project Rules & Operating Model**
-
-This file defines how Claude and other AI coding agents must behave when working in this repository.
-
-This project does **not** use Moltbot.
-
-Claude Code and other coding agents are used to **build and maintain** the system — they are **not the runtime system itself**.
-
----
-
-## Core Principle
-
-LLMs are probabilistic.
-
-Production systems must be deterministic.
-
-Claude’s role is to:
-
-- reason
-- plan
-- orchestrate
-- modify instructions and code **carefully**
-
-Claude is **not** the runtime executor of business logic.
-
----
-
-## High-Level Architecture
-
-This project follows an **Agent-First, Deterministic-Execution** model.
-
-### Layer 1 — Directives
-
-- Human-readable SOPs
-- Stored in `/directives`
-- Written in plain language
-- Describe goals, inputs, outputs, edge cases, and safety constraints
-
-Directives are living documents and must be updated as the system learns.
-
-### Layer 2 — Orchestration
-
-- This is Claude
-- Responsibilities:
-  - read relevant directives
-  - plan changes
-  - decide which tools/scripts are required
-  - ask clarifying questions when needed
-  - update directives with learnings
-
-Claude **never** executes business logic directly.
-
-### Layer 3 — Execution
-
-- Deterministic scripts
-- Stored in `/execution` and optionally `/services/worker`
-- Responsibilities:
-  - API calls
-  - data processing
-  - database reads/writes
-  - file operations
-  - scheduled jobs
-
-Execution code must be repeatable, testable, auditable, and safe to rerun.
-
----
-
-## Folder Responsibilities
-
-### `/agents`
-
-Agent personas and role definitions. No executable logic.
-
-### `/directives`
-
-SOPs and runbooks. Claude reads these before acting.
-
-### `/execution`
-
-Deterministic tools and scripts. One script = one clear responsibility. No prompts.
-
-### `/services/worker`
-
-Long-running or scheduled jobs. Calls scripts from `/execution`.
-
-### `/config`
-
-Environment wiring. No secrets.
-
-### `/tests`
-
-Automated tests.
-
-### `/tmp`
-
-Scratch space. Safe to delete. Never committed.
-
----
-
-## Testing & Validation Rules
-
-Testing is mandatory.
-
-- All non-trivial execution logic must have unit tests.
-- External dependencies must be mocked.
-- Integration tests must never touch production.
-- Workers must never send real communications during tests.
-- Directives must be validated for required sections, referenced files, and markdown structure.
-
----
-
-## Claude Operating Rules
-
-### 1. Never act blindly
-
-Always read relevant directives first. If no directive exists, ask before creating one.
-
-### 2. Never mix layers
-
-No business logic in directives.  
-No orchestration logic in execution scripts.  
-No execution inside Claude responses.
-
-### 3. Prefer deterministic tools
-
-If a task can be done via a script, do not simulate it in natural language.
-
-### 4. Approval-gated changes
-
-Claude must request approval before:
-
-- large refactors
-- schema changes
-- deleting files
-- production-impacting logic
-- modifying safety or compliance directives
-
-### 5. Self-Annealing Loop
-
-When something fails:
-
-1. Identify the root cause
-2. Fix the script or logic
-3. Add or update tests
-4. Update the relevant directive
-5. Confirm the system is stronger
-
-Failures are inputs, not mistakes.
-
----
-
-## Tooling Assumptions
-
-Claude may assume:
-
-- Claude Code is available as a terminal coding agent
-- VS Code, VSCodium, or Cursor may be used
-- Git is always present
-- CI runs automated tests
-
-Claude must not assume:
-
-- Moltbot exists
-- proprietary automation platforms exist
-- production credentials are available locally
-
----
-
-## Intern Safety Rules
-
-This repository may be worked on by interns.
-
-Therefore:
-
-- No destructive scripts without confirmation
-- No production writes without explicit environment checks
-- No secrets in repo
-- Clear setup instructions must exist in `/docs`
-- One-command test execution must exist, such as `scripts/test`
-
-Claude should optimize for:
-
-- clarity
-- reproducibility
-- teachability
-
----
-
-## Definition of Done
-
-A change is not complete unless:
-
-- relevant unit tests exist and pass
-- behavior-changing logic updates directives
-- no secrets are introduced
-- validation scripts pass
-- changes are understandable by a junior developer
-
----
-
-## Summary
-
-Claude is the **planner and orchestrator**, not the worker.
-
-- Directives define intent
-- Scripts do the work
-- Workers run the system
-- Tests protect correctness
-- Claude improves the system over time
-
-**Be deliberate.  
-Be safe.  
-Prefer systems over cleverness.**
+# CLAUDE.md — GovReport AI
+
+## Architecture
+- Layer 1: Directives (`/directives`) — SOPs, goals, constraints
+- Layer 2: Orchestration — Claude plans, never executes business logic
+- Layer 3: Execution (`/execution`) — deterministic scripts only
+
+## Folder Rules
+- `/agents` — role definitions, no logic
+- `/directives` — SOPs Claude reads before acting
+- `/execution` — one script, one responsibility, no prompts
+- `/services/worker` — scheduled/long-running jobs
+- `/config` — environment wiring, no secrets
+- `/tests` — automated tests
+- `/tmp` — scratch space, never committed
+
+## Claude Rules
+1. Read relevant directives before acting
+2. Never mix layers
+3. Prefer scripts over natural language simulation
+4. Request approval before: schema changes, large refactors, file deletions, production-impacting logic
+5. On failure: identify cause → fix → add test → update directive
+
+## Testing
+- Unit tests required for all non-trivial execution logic
+- Mock all external dependencies
+- Never touch production in integration tests
 
 ## Git Policy
-**Claude Code does not touch git.** No `git add`, `git commit`, `git push`, `git merge`, or any command that modifies repository history. The developer handles all version control. When a phase is ready to commit, Claude Code's job is done — state that clearly and stop.
+Claude Code does not touch git. No add, commit, push, or merge. Developer handles all version control.
 
-## Data & Schema Notes
-When touching the database layer, briefly note how the change affects data flow, schema relationships, or query patterns — one line only. Skip when not relevant. This connects to the target roles (SQL Developer, BI Developer).
+## Definition of Done
+- Unit tests pass
+- No secrets introduced
+- Logic changes reflected in directives
+- Code understandable by a junior developer
+
+## Assumptions
+- Claude Code, VS Code, Git are available
+- Production credentials are not available locally
+- No destructive actions without confirmation
