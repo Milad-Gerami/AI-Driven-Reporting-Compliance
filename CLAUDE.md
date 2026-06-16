@@ -7,12 +7,14 @@
 
 ## Folder Rules
 - `/agents` — role definitions, no logic
-- `/directives` — SOPs Claude reads before acting
-- `/execution` — one script, one responsibility, no prompts
-- `/services/worker` — scheduled/long-running jobs
+- `/api` — HTTP server, routes, middleware, validators
 - `/config` — environment wiring, no secrets
+- `/directives` — SOPs Claude reads before acting
+- `/execution` — pure business logic, migrations, seeds; one function or script, one responsibility; no HTTP or queue transport concerns
+- `/services/worker` — queue and scheduler configuration
 - `/tests` — automated tests
 - `/tmp` — scratch space, never committed
+- `/workers` — background job handlers
 
 ## Claude Rules
 1. Read relevant directives before acting
