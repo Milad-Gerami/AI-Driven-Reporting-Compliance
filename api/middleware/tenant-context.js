@@ -1,15 +1,42 @@
-// Activates PostgreSQL row-level security for the authenticated tenant.
-// Verifies tenant status is active, then executes SET LOCAL app.current_tenant_id
-// on the database connection. Rejects with 401 if tenant is suspended or offboarded.
-// Once set, the tenant context must not change during request processing.
-// Skipped for health endpoints. See directives/middleware-architecture.md section 4.
+'use strict';
 
-// TODO: Read req.tenantId (set by authentication middleware)
-// TODO: Verify tenant status is 'active' against the database
-// TODO: Execute SET LOCAL app.current_tenant_id on the DB connection
+function createTenantContextMiddleware(deps) {
+  if (!deps || typeof deps.withTenantContext !== 'function') {
+    throw new Error('createTenantContextMiddleware: withTenantContext must be a function');
+  }
 
-function tenantContext(req, res, next) {
-  next();
+  const { withTenantContext } = deps;
+
+  return async function tenantContext(req, res, next) {
+    if (!req.tenantId || !req.tenant) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHENTICATED',
+          message: 'Authentication required.',
+          request_id: req.requestId,
+        },
+      });
+    }
+
+    if (req.tenant.status !== 'active') {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHENTICATED',
+          message: 'Authentication required.',
+          request_id: req.requestId,
+        },
+      });
+    }
+
+    try {
+      await withTenantContext(req.tenantId, async (ctx) => {
+        req.tenantContext = ctx;
+        next();
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
 }
 
-module.exports = tenantContext;
+module.exports = createTenantContextMiddleware;

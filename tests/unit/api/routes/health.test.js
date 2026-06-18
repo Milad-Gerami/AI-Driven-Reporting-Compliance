@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
-import app from '../../../../api/server.js';
+import createServer from '../../../../api/server.js';
+
+const app = createServer();
 
 describe('GET /api/v1/health/live', () => {
   it('returns 200 with status, version, and api fields', async () => {

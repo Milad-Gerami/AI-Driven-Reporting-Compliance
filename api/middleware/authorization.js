@@ -1,18 +1,76 @@
-// Enforces agency membership checks and permission checks.
-// For agency-scoped routes: verifies agency exists (404) then verifies caller access (403).
-// For permission-gated routes: checks req.effectivePermissions for the required string.
-// Also enforces escalation prevention and separation of duties where applicable.
-// Skipped for health endpoints and /me. See directives/middleware-architecture.md section 5.
+'use strict';
 
-// TODO: Implement agency existence check within current tenant
-// TODO: Implement agency membership check (direct or tenant-wide membership)
-// TODO: Implement permission string check against req.effectivePermissions
-// TODO: Implement escalation prevention for membership management routes
-// TODO: Implement separation of duties for report approval transitions
-// TODO: Set req.agencyId after successful agency validation
+function createAuthorizationMiddleware(deps) {
+  if (!deps || typeof deps.verifyAgency !== 'function') {
+    throw new Error('createAuthorizationMiddleware: verifyAgency must be a function');
+  }
 
-function authorization(req, res, next) {
-  next();
+  const { verifyAgency } = deps;
+
+  function requirePermission(permission) {
+    if (typeof permission !== 'string' || permission.length === 0) {
+      throw new Error('createAuthorizationMiddleware: permission must be a non-empty string');
+    }
+
+    return function permissionCheck(req, res, next) {
+      if (
+        !req.effectivePermissions
+        || typeof req.effectivePermissions.has !== 'function'
+        || !req.effectivePermissions.has(permission)
+      ) {
+        return res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'Insufficient permissions.',
+            request_id: req.requestId,
+          },
+        });
+      }
+      next();
+    };
+  }
+
+  function requireAgency() {
+    return async function agencyCheck(req, res, next) {
+      const agencyId = req.params.agency_id;
+
+      let agency;
+      try {
+        agency = await verifyAgency(req.tenantId, agencyId);
+      } catch (err) {
+        return next(err);
+      }
+
+      if (!agency) {
+        return res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Agency not found.',
+            request_id: req.requestId,
+          },
+        });
+      }
+
+      const hasAccess = req.memberships && req.memberships.some(
+        (m) => m.agency_id === agencyId || m.agency_id === null,
+      );
+
+      if (!hasAccess) {
+        return res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'Insufficient permissions.',
+            request_id: req.requestId,
+          },
+        });
+      }
+
+      req.agencyId = agencyId;
+      next();
+    };
+  }
+
+  return { requirePermission, requireAgency };
 }
 
-module.exports = authorization;
+module.exports = createAuthorizationMiddleware;
