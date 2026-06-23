@@ -17,7 +17,7 @@ const meRoutes = require('./routes/me');
 //   7. audit-writer        — skipped for health
 //   8. error-handler       — all routes
 
-function createServer({ authentication, tenantContext, tenantRoutes, agencyRoutes } = {}) {
+function createServer({ authentication, tenantContext, tenantRoutes, agencyRoutes, auditRoutes } = {}) {
   const app = express();
 
   app.use(express.json());
@@ -47,6 +47,9 @@ function createServer({ authentication, tenantContext, tenantRoutes, agencyRoute
   }
   if (agencyRoutes) {
     app.use('/api/v1/agencies', agencyRoutes);
+  }
+  if (auditRoutes) {
+    app.use('/api/v1/audit', auditRoutes);
   }
 
   app.use(errorHandler);
