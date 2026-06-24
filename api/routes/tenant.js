@@ -12,7 +12,7 @@ const patchTenantBody = z.object({
   { message: 'At least one field (name or slug) must be provided' },
 );
 
-function createTenantRoutes({ authorize, getTenant, updateTenant }) {
+function createTenantRoutes({ authorize, getTenant, updateTenant, createAuditEvent }) {
   if (!authorize || typeof authorize.requirePermission !== 'function') {
     throw new Error('createTenantRoutes: authorize.requirePermission must be a function');
   }
@@ -21,6 +21,9 @@ function createTenantRoutes({ authorize, getTenant, updateTenant }) {
   }
   if (typeof updateTenant !== 'function') {
     throw new Error('createTenantRoutes: updateTenant must be a function');
+  }
+  if (typeof createAuditEvent !== 'function') {
+    throw new Error('createTenantRoutes: createAuditEvent must be a function');
   }
 
   const router = Router();
@@ -40,7 +43,24 @@ function createTenantRoutes({ authorize, getTenant, updateTenant }) {
     createValidationMiddleware({ body: patchTenantBody }),
     async (req, res, next) => {
       try {
+        const before = await getTenant(req.tenantContext, req.tenantId);
         const tenant = await updateTenant(req.tenantContext, req.tenantId, req.validated.body);
+        await createAuditEvent(req.tenantContext, {
+          tenant_id: req.tenantId,
+          actor_id: req.userId,
+          actor_type: 'user',
+          action: 'tenant.updated',
+          resource_type: 'tenants',
+          resource_id: tenant.id,
+          metadata: {
+            ip_address: req.auditContext.ipAddress,
+            user_agent: req.auditContext.userAgent,
+            request_method: req.auditContext.requestMethod,
+            request_path: req.auditContext.requestPath,
+            before,
+            after: tenant,
+          },
+        });
         res.status(200).json(tenant);
       } catch (err) {
         next(err);

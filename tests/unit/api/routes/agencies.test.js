@@ -4,11 +4,13 @@ import express from 'express';
 import createAgencyRoutes from '../../../../api/routes/agencies.js';
 import createAuthorizationMiddleware from '../../../../api/middleware/authorization.js';
 import requestId from '../../../../api/middleware/request-id.js';
+import auditContextMiddleware from '../../../../api/middleware/audit-context.js';
 import errorHandler from '../../../../api/middleware/error-handler.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const TENANT_ID = 'c0000000-0000-4000-a000-000000000001';
+const USER_ID = 'u0000000-0000-4000-a000-000000000001';
 const AGENCY_ID = 'a0000000-0000-4000-a000-000000000001';
 const MOCK_CLIENT = { query: vi.fn() };
 
@@ -42,6 +44,7 @@ function defaultMocks() {
     listAgenciesFn: vi.fn().mockResolvedValue([MOCK_AGENCY, MOCK_AGENCY_B]),
     getAgencyFn: vi.fn().mockResolvedValue(MOCK_AGENCY),
     createAgencyFn: vi.fn().mockResolvedValue(MOCK_AGENCY),
+    createAuditEventFn: vi.fn().mockResolvedValue({ id: 'audit-1' }),
     updateAgencyFn: vi.fn().mockResolvedValue(MOCK_AGENCY),
     deleteAgencyFn: vi.fn().mockResolvedValue(true),
   };
@@ -50,11 +53,13 @@ function defaultMocks() {
 function createApp({
   permissions = new Set(),
   tenantId = TENANT_ID,
+  userId = USER_ID,
   tenantContext = MOCK_CLIENT,
   validateFn = passthrough,
   listAgenciesFn,
   getAgencyFn,
   createAgencyFn,
+  createAuditEventFn,
   updateAgencyFn,
   deleteAgencyFn,
 } = {}) {
@@ -62,9 +67,11 @@ function createApp({
   const app = express();
   app.use(express.json());
   app.use(requestId);
+  app.use(auditContextMiddleware);
 
   app.use((req, _res, next) => {
     req.tenantId = tenantId;
+    req.userId = userId;
     req.tenantContext = tenantContext;
     req.effectivePermissions = permissions;
     next();
@@ -78,6 +85,7 @@ function createApp({
     listAgencies: listAgenciesFn || mocks.listAgenciesFn,
     getAgency: getAgencyFn || mocks.getAgencyFn,
     createAgency: createAgencyFn || mocks.createAgencyFn,
+    createAuditEvent: createAuditEventFn || mocks.createAuditEventFn,
     updateAgency: updateAgencyFn || mocks.updateAgencyFn,
     deleteAgency: deleteAgencyFn || mocks.deleteAgencyFn,
   });
@@ -97,6 +105,7 @@ describe('agency routes — factory validation', () => {
     listAgencies: async () => [],
     getAgency: async () => ({}),
     createAgency: async () => ({}),
+    createAuditEvent: async () => ({}),
     updateAgency: async () => ({}),
     deleteAgency: async () => true,
   };
@@ -133,6 +142,12 @@ describe('agency routes — factory validation', () => {
   it('throws when createAgency is missing', () => {
     expect(() => createAgencyRoutes({ ...validDeps, createAgency: null })).toThrow(
       'createAgency must be a function',
+    );
+  });
+
+  it('throws when createAuditEvent is missing', () => {
+    expect(() => createAgencyRoutes({ ...validDeps, createAuditEvent: null })).toThrow(
+      'createAuditEvent must be a function',
     );
   });
 
@@ -502,6 +517,7 @@ describe('agency routes — authorization wiring', () => {
       listAgencies: async () => [],
       getAgency: async () => ({}),
       createAgency: async () => ({}),
+      createAuditEvent: async () => ({}),
       updateAgency: async () => ({}),
       deleteAgency: async () => true,
     });
@@ -517,6 +533,7 @@ describe('agency routes — authorization wiring', () => {
       listAgencies: async () => [],
       getAgency: async () => ({}),
       createAgency: async () => ({}),
+      createAuditEvent: async () => ({}),
       updateAgency: async () => ({}),
       deleteAgency: async () => true,
     });
@@ -532,6 +549,7 @@ describe('agency routes — authorization wiring', () => {
       listAgencies: async () => [],
       getAgency: async () => ({}),
       createAgency: async () => ({}),
+      createAuditEvent: async () => ({}),
       updateAgency: async () => ({}),
       deleteAgency: async () => true,
     });
@@ -655,5 +673,412 @@ describe('agency routes — response behavior', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error.request_id).toMatch(UUID_REGEX);
+  });
+});
+
+// ───── Audit event on agency create ─────
+
+describe('POST /api/v1/agencies — audit event', () => {
+  it('calls createAuditEvent after successful create', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .post('/api/v1/agencies')
+      .send({ name: 'Department of Testing', slug: 'dept-testing' });
+
+    expect(res.status).toBe(201);
+    expect(createAuditEventFn).toHaveBeenCalledOnce();
+  });
+
+  it('passes agency.created as the action', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .post('/api/v1/agencies')
+      .send({ name: 'Test', slug: 'test' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.action).toBe('agency.created');
+  });
+
+  it('passes agencies as the resource_type', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .post('/api/v1/agencies')
+      .send({ name: 'Test', slug: 'test' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_type).toBe('agencies');
+  });
+
+  it('passes the created agency id as resource_id', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .post('/api/v1/agencies')
+      .send({ name: 'Test', slug: 'test' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_id).toBe(AGENCY_ID);
+  });
+
+  it('includes ip_address, user_agent, request_method, request_path, and after in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .post('/api/v1/agencies')
+      .set('User-Agent', 'GovReport/1.0')
+      .send({ name: 'Test', slug: 'test' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.tenant_id).toBe(TENANT_ID);
+    expect(event.actor_id).toBe(USER_ID);
+    expect(event.actor_type).toBe('user');
+    expect(event.metadata.ip_address).toBeDefined();
+    expect(event.metadata.user_agent).toBe('GovReport/1.0');
+    expect(event.metadata.request_method).toBe('POST');
+    expect(event.metadata.request_path).toBe('/api/v1/agencies');
+    expect(event.metadata.after).toEqual(MOCK_AGENCY);
+  });
+
+  it('does not call createAuditEvent when createAgency fails', async () => {
+    const createAgencyFn = vi.fn().mockRejectedValue(new Error('DB down'));
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .post('/api/v1/agencies')
+      .send({ name: 'Test', slug: 'test' });
+
+    expect(res.status).toBe(500);
+    expect(createAuditEventFn).not.toHaveBeenCalled();
+  });
+
+  it('propagates audit event failures as 500 errors', async () => {
+    const createAuditEventFn = vi.fn().mockRejectedValue(new Error('audit write failed'));
+    const app = createApp({
+      permissions: new Set(['agencies.create']),
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .post('/api/v1/agencies')
+      .send({ name: 'Test', slug: 'test' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+  });
+});
+
+// ───── Audit event on agency update ─────
+
+const UPDATED_MOCK_AGENCY = {
+  ...MOCK_AGENCY,
+  name: 'Renamed Department',
+  slug: 'renamed-dept',
+  updated_at: '2026-06-23T00:00:00Z',
+};
+
+describe('PATCH /api/v1/agencies/:agency_id — audit event', () => {
+  it('calls createAuditEvent after successful update', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Renamed Department' });
+
+    expect(res.status).toBe(200);
+    expect(createAuditEventFn).toHaveBeenCalledOnce();
+  });
+
+  it('passes agency.updated as the action', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Renamed Department' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.action).toBe('agency.updated');
+  });
+
+  it('passes agencies as the resource_type', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Renamed Department' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_type).toBe('agencies');
+  });
+
+  it('passes the updated agency id as resource_id', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Renamed Department' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_id).toBe(AGENCY_ID);
+  });
+
+  it('includes the before snapshot in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Renamed Department' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.metadata.before).toEqual(MOCK_AGENCY);
+  });
+
+  it('includes the after snapshot in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .set('User-Agent', 'GovReport/1.0')
+      .send({ name: 'Renamed Department' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.tenant_id).toBe(TENANT_ID);
+    expect(event.actor_id).toBe(USER_ID);
+    expect(event.actor_type).toBe('user');
+    expect(event.metadata.ip_address).toBeDefined();
+    expect(event.metadata.user_agent).toBe('GovReport/1.0');
+    expect(event.metadata.request_method).toBe('PATCH');
+    expect(event.metadata.request_path).toBe(`/api/v1/agencies/${AGENCY_ID}`);
+    expect(event.metadata.after).toEqual(UPDATED_MOCK_AGENCY);
+  });
+
+  it('does not call createAuditEvent when updateAgency fails', async () => {
+    const updateAgencyFn = vi.fn().mockRejectedValue(new Error('DB down'));
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Test' });
+
+    expect(res.status).toBe(500);
+    expect(createAuditEventFn).not.toHaveBeenCalled();
+  });
+
+  it('propagates audit event failures as 500 errors', async () => {
+    const updateAgencyFn = vi.fn().mockResolvedValue(UPDATED_MOCK_AGENCY);
+    const createAuditEventFn = vi.fn().mockRejectedValue(new Error('audit write failed'));
+    const app = createApp({
+      permissions: new Set(['agencies.update']),
+      updateAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/agencies/${AGENCY_ID}`)
+      .send({ name: 'Renamed Department' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+  });
+});
+
+// ───── Audit event on agency delete ─────
+
+describe('DELETE /api/v1/agencies/:agency_id — audit event', () => {
+  it('calls createAuditEvent after successful delete', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    expect(res.status).toBe(204);
+    expect(createAuditEventFn).toHaveBeenCalledOnce();
+  });
+
+  it('passes agency.deleted as the action', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.action).toBe('agency.deleted');
+  });
+
+  it('passes agencies as the resource_type', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_type).toBe('agencies');
+  });
+
+  it('passes the deleted agency id as resource_id', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_id).toBe(AGENCY_ID);
+  });
+
+  it('includes the before snapshot in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .delete(`/api/v1/agencies/${AGENCY_ID}`)
+      .set('User-Agent', 'GovReport/1.0');
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.tenant_id).toBe(TENANT_ID);
+    expect(event.actor_id).toBe(USER_ID);
+    expect(event.actor_type).toBe('user');
+    expect(event.metadata.ip_address).toBeDefined();
+    expect(event.metadata.user_agent).toBe('GovReport/1.0');
+    expect(event.metadata.request_method).toBe('DELETE');
+    expect(event.metadata.request_path).toBe(`/api/v1/agencies/${AGENCY_ID}`);
+    expect(event.metadata.before).toEqual(MOCK_AGENCY);
+  });
+
+  it('does not include an after snapshot in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.metadata).not.toHaveProperty('after');
+  });
+
+  it('does not call createAuditEvent when deleteAgency fails', async () => {
+    const deleteAgencyFn = vi.fn().mockRejectedValue(new Error('FK violation'));
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    expect(res.status).toBe(500);
+    expect(createAuditEventFn).not.toHaveBeenCalled();
+  });
+
+  it('propagates audit event failures as 500 errors', async () => {
+    const deleteAgencyFn = vi.fn().mockResolvedValue(true);
+    const createAuditEventFn = vi.fn().mockRejectedValue(new Error('audit write failed'));
+    const app = createApp({
+      permissions: new Set(['agencies.delete']),
+      deleteAgencyFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app).delete(`/api/v1/agencies/${AGENCY_ID}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
   });
 });

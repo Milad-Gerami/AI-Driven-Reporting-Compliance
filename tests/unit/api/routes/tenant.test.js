@@ -4,11 +4,13 @@ import express from 'express';
 import createTenantRoutes from '../../../../api/routes/tenant.js';
 import createAuthorizationMiddleware from '../../../../api/middleware/authorization.js';
 import requestId from '../../../../api/middleware/request-id.js';
+import auditContextMiddleware from '../../../../api/middleware/audit-context.js';
 import errorHandler from '../../../../api/middleware/error-handler.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const TENANT_ID = 'c0000000-0000-4000-a000-000000000001';
+const USER_ID = 'u0000000-0000-4000-a000-000000000001';
 const MOCK_CLIENT = { query: vi.fn() };
 
 const MOCK_TENANT = {
@@ -23,16 +25,20 @@ const MOCK_TENANT = {
 function createApp({
   permissions = new Set(),
   tenantId = TENANT_ID,
+  userId = USER_ID,
   tenantContext = MOCK_CLIENT,
   getTenantFn,
   updateTenantFn,
+  createAuditEventFn,
 } = {}) {
   const app = express();
   app.use(express.json());
   app.use(requestId);
+  app.use(auditContextMiddleware);
 
   app.use((req, _res, next) => {
     req.tenantId = tenantId;
+    req.userId = userId;
     req.tenantContext = tenantContext;
     req.effectivePermissions = permissions;
     next();
@@ -43,6 +49,7 @@ function createApp({
     authorize,
     getTenant: getTenantFn || vi.fn().mockResolvedValue(MOCK_TENANT),
     updateTenant: updateTenantFn || vi.fn().mockResolvedValue(MOCK_TENANT),
+    createAuditEvent: createAuditEventFn || vi.fn().mockResolvedValue({ id: 'audit-1' }),
   });
 
   app.use('/api/v1/tenant', tenantRoutes);
@@ -58,6 +65,7 @@ describe('tenant routes — factory validation', () => {
     authorize: { requirePermission: () => (_req, _res, next) => next() },
     getTenant: async () => ({}),
     updateTenant: async () => ({}),
+    createAuditEvent: async () => ({}),
   };
 
   it('returns a router when all deps are valid', () => {
@@ -86,6 +94,12 @@ describe('tenant routes — factory validation', () => {
   it('throws when updateTenant is not a function', () => {
     expect(() => createTenantRoutes({ ...validDeps, updateTenant: null })).toThrow(
       'updateTenant must be a function',
+    );
+  });
+
+  it('throws when createAuditEvent is not a function', () => {
+    expect(() => createTenantRoutes({ ...validDeps, createAuditEvent: null })).toThrow(
+      'createAuditEvent must be a function',
     );
   });
 });
@@ -477,6 +491,161 @@ describe('PATCH /api/v1/tenant — success', () => {
     const updates = updateTenantFn.mock.calls[0][2];
     expect(updates).toEqual({ name: 'Clean' });
     expect(updates).not.toHaveProperty('extra');
+  });
+});
+
+// ───── Audit event on tenant update ─────
+
+const UPDATED_MOCK_TENANT = {
+  ...MOCK_TENANT,
+  name: 'Renamed Government',
+  slug: 'renamed-gov',
+  updated_at: '2026-06-23T00:00:00Z',
+};
+
+describe('PATCH /api/v1/tenant — audit event', () => {
+  it('calls createAuditEvent after successful update', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Renamed Government' });
+
+    expect(res.status).toBe(200);
+    expect(createAuditEventFn).toHaveBeenCalledOnce();
+  });
+
+  it('passes tenant.updated as the action', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Renamed Government' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.action).toBe('tenant.updated');
+  });
+
+  it('passes tenants as the resource_type', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Renamed Government' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_type).toBe('tenants');
+  });
+
+  it('passes the updated tenant id as resource_id', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Renamed Government' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.resource_id).toBe(TENANT_ID);
+  });
+
+  it('includes the before snapshot in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Renamed Government' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.metadata.before).toEqual(MOCK_TENANT);
+  });
+
+  it('includes the after snapshot in metadata', async () => {
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    await request(app)
+      .patch('/api/v1/tenant')
+      .set('User-Agent', 'GovReport/1.0')
+      .send({ name: 'Renamed Government' });
+
+    const [, event] = createAuditEventFn.mock.calls[0];
+    expect(event.tenant_id).toBe(TENANT_ID);
+    expect(event.actor_id).toBe(USER_ID);
+    expect(event.actor_type).toBe('user');
+    expect(event.metadata.ip_address).toBeDefined();
+    expect(event.metadata.user_agent).toBe('GovReport/1.0');
+    expect(event.metadata.request_method).toBe('PATCH');
+    expect(event.metadata.request_path).toBe('/api/v1/tenant');
+    expect(event.metadata.after).toEqual(UPDATED_MOCK_TENANT);
+  });
+
+  it('does not call createAuditEvent when updateTenant fails', async () => {
+    const updateTenantFn = vi.fn().mockRejectedValue(new Error('DB down'));
+    const createAuditEventFn = vi.fn().mockResolvedValue({ id: 'audit-1' });
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Will Fail' });
+
+    expect(res.status).toBe(500);
+    expect(createAuditEventFn).not.toHaveBeenCalled();
+  });
+
+  it('propagates audit event failures as 500 errors', async () => {
+    const updateTenantFn = vi.fn().mockResolvedValue(UPDATED_MOCK_TENANT);
+    const createAuditEventFn = vi.fn().mockRejectedValue(new Error('audit write failed'));
+    const app = createApp({
+      permissions: new Set(['tenant.admin']),
+      updateTenantFn,
+      createAuditEventFn,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/tenant')
+      .send({ name: 'Renamed Government' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createAuditEvent, listAuditEvents } from '../../../../execution/logic/audit.js';
+import { createAuditEvent, listAuditEvents, sanitizeMetadata } from '../../../../execution/logic/audit.js';
 
 const TENANT_ID = 'c0000000-0000-4000-a000-000000000001';
 const ACTOR_ID = 'u0000000-0000-4000-a000-000000000001';
@@ -529,5 +529,274 @@ describe('listAuditEvents — error propagation', () => {
     const client = { query: vi.fn().mockRejectedValue(dbError) };
 
     await expect(listAuditEvents(client, TENANT_ID)).rejects.toThrow(dbError);
+  });
+});
+
+// ═══════════════════════════════════════════════════
+//  sanitizeMetadata
+// ═══════════════════════════════════════════════════
+
+// ───── connection_config replacement ─────
+
+describe('sanitizeMetadata — connection_config replacement', () => {
+  it('replaces before.connection_config with connection_config_fields', () => {
+    const metadata = {
+      before: { id: 'ds-1', connection_config: { host: 'db.example.com', port: 5432 } },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.before.connection_config_fields).toEqual(['host', 'port']);
+    expect(result.before).not.toHaveProperty('connection_config');
+  });
+
+  it('replaces after.connection_config with connection_config_fields', () => {
+    const metadata = {
+      after: { id: 'ds-1', connection_config: { host: 'db.example.com', port: 5432, path: '/data' } },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after.connection_config_fields).toEqual(['host', 'port', 'path']);
+    expect(result.after).not.toHaveProperty('connection_config');
+  });
+
+  it('replaces connection_config in both before and after', () => {
+    const metadata = {
+      before: { connection_config: { host: 'old.example.com' } },
+      after: { connection_config: { host: 'new.example.com', port: 5432 } },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.before.connection_config_fields).toEqual(['host']);
+    expect(result.after.connection_config_fields).toEqual(['host', 'port']);
+    expect(result.before).not.toHaveProperty('connection_config');
+    expect(result.after).not.toHaveProperty('connection_config');
+  });
+
+  it('preserves other fields when replacing connection_config', () => {
+    const metadata = {
+      after: { id: 'ds-1', name: 'prod-db', connection_config: { host: 'h' } },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after.id).toBe('ds-1');
+    expect(result.after.name).toBe('prod-db');
+  });
+});
+
+// ───── auth_provider_id removal ─────
+
+describe('sanitizeMetadata — auth_provider_id removal', () => {
+  it('removes auth_provider_id from before snapshot', () => {
+    const metadata = {
+      before: { id: 'u-1', name: 'Alice', auth_provider_id: 'google|12345' },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.before).not.toHaveProperty('auth_provider_id');
+    expect(result.before.id).toBe('u-1');
+    expect(result.before.name).toBe('Alice');
+  });
+
+  it('removes auth_provider_id from after snapshot', () => {
+    const metadata = {
+      after: { id: 'u-1', auth_provider_id: 'azure|abc' },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after).not.toHaveProperty('auth_provider_id');
+  });
+
+  it('removes auth_provider_id from both snapshots', () => {
+    const metadata = {
+      before: { auth_provider_id: 'old-id' },
+      after: { auth_provider_id: 'new-id' },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.before).not.toHaveProperty('auth_provider_id');
+    expect(result.after).not.toHaveProperty('auth_provider_id');
+  });
+});
+
+// ───── reports.content replacement ─────
+
+describe('sanitizeMetadata — report content replacement', () => {
+  it('replaces truthy content with has_content: true', () => {
+    const metadata = {
+      after: { id: 'r-1', content: { sections: [{ title: 'Overview' }] } },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after.has_content).toBe(true);
+    expect(result.after).not.toHaveProperty('content');
+  });
+
+  it('replaces null content with has_content: false', () => {
+    const metadata = {
+      after: { id: 'r-1', content: null },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after.has_content).toBe(false);
+    expect(result.after).not.toHaveProperty('content');
+  });
+
+  it('replaces empty string content with has_content: false', () => {
+    const metadata = {
+      before: { id: 'r-1', content: '' },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.before.has_content).toBe(false);
+    expect(result.before).not.toHaveProperty('content');
+  });
+
+  it('preserves other fields when replacing content', () => {
+    const metadata = {
+      after: { id: 'r-1', status: 'draft', content: 'some report text' },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after.id).toBe('r-1');
+    expect(result.after.status).toBe('draft');
+  });
+});
+
+// ───── compliance_results.details removal ─────
+
+describe('sanitizeMetadata — compliance details removal', () => {
+  it('removes details from before snapshot', () => {
+    const metadata = {
+      before: { id: 'cr-1', status: 'pass', details: { failing_records: [1, 2, 3] } },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.before).not.toHaveProperty('details');
+    expect(result.before.id).toBe('cr-1');
+    expect(result.before.status).toBe('pass');
+  });
+
+  it('removes details from after snapshot', () => {
+    const metadata = {
+      after: { id: 'cr-1', details: [{ rule: 'R1', failures: 100 }] },
+    };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result.after).not.toHaveProperty('details');
+  });
+});
+
+// ───── original metadata unchanged ─────
+
+describe('sanitizeMetadata — immutability', () => {
+  it('does not mutate the original metadata object', () => {
+    const metadata = {
+      ip_address: '10.0.0.1',
+      before: {
+        id: 'ds-1',
+        connection_config: { host: 'db.example.com', port: 5432 },
+        auth_provider_id: 'google|12345',
+        content: 'big report',
+        details: { records: [1] },
+      },
+      after: {
+        id: 'ds-1',
+        connection_config: { host: 'new.example.com' },
+      },
+    };
+
+    const originalJson = JSON.stringify(metadata);
+    sanitizeMetadata(metadata);
+
+    expect(JSON.stringify(metadata)).toBe(originalJson);
+  });
+
+  it('returns a new object, not the same reference', () => {
+    const metadata = { before: { id: 'x' } };
+    const result = sanitizeMetadata(metadata);
+
+    expect(result).not.toBe(metadata);
+  });
+});
+
+// ───── sanitized metadata reaches client.query ─────
+
+describe('createAuditEvent — sanitized metadata reaches query', () => {
+  it('passes sanitized metadata (connection_config replaced) to client.query', async () => {
+    const event = {
+      ...AUDIT_EVENT,
+      metadata: {
+        ip_address: '127.0.0.1',
+        after: { id: 'ds-1', connection_config: { host: 'h', port: 5432 } },
+      },
+    };
+    const client = mockClient([INSERTED_ROW]);
+    await createAuditEvent(client, event);
+
+    const [, params] = client.query.mock.calls[0];
+    const sentMeta = params[6];
+    expect(sentMeta.after).not.toHaveProperty('connection_config');
+    expect(sentMeta.after.connection_config_fields).toEqual(['host', 'port']);
+  });
+
+  it('passes sanitized metadata (auth_provider_id removed) to client.query', async () => {
+    const event = {
+      ...AUDIT_EVENT,
+      metadata: {
+        ip_address: '127.0.0.1',
+        before: { id: 'u-1', auth_provider_id: 'google|abc' },
+      },
+    };
+    const client = mockClient([INSERTED_ROW]);
+    await createAuditEvent(client, event);
+
+    const [, params] = client.query.mock.calls[0];
+    expect(params[6].before).not.toHaveProperty('auth_provider_id');
+  });
+
+  it('passes sanitized metadata (content replaced) to client.query', async () => {
+    const event = {
+      ...AUDIT_EVENT,
+      metadata: {
+        ip_address: '127.0.0.1',
+        after: { id: 'r-1', content: 'large report body' },
+      },
+    };
+    const client = mockClient([INSERTED_ROW]);
+    await createAuditEvent(client, event);
+
+    const [, params] = client.query.mock.calls[0];
+    expect(params[6].after).not.toHaveProperty('content');
+    expect(params[6].after.has_content).toBe(true);
+  });
+
+  it('passes sanitized metadata (details removed) to client.query', async () => {
+    const event = {
+      ...AUDIT_EVENT,
+      metadata: {
+        ip_address: '127.0.0.1',
+        before: { id: 'cr-1', details: { records: [1, 2] } },
+      },
+    };
+    const client = mockClient([INSERTED_ROW]);
+    await createAuditEvent(client, event);
+
+    const [, params] = client.query.mock.calls[0];
+    expect(params[6].before).not.toHaveProperty('details');
+  });
+
+  it('does not mutate the original event.metadata', async () => {
+    const event = {
+      ...AUDIT_EVENT,
+      metadata: {
+        ip_address: '127.0.0.1',
+        after: { id: 'ds-1', connection_config: { host: 'h' } },
+      },
+    };
+    const originalJson = JSON.stringify(event.metadata);
+    const client = mockClient([INSERTED_ROW]);
+    await createAuditEvent(client, event);
+
+    expect(JSON.stringify(event.metadata)).toBe(originalJson);
   });
 });
